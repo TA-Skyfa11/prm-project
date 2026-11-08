@@ -1,0 +1,18 @@
+name = "prm-project"
+main = "worker.js"
+compatibility_date = "2026-11-08"
+
+# Route pattern matching the user's domain: *-prm-project.agrilog.workers.dev
+[vars]
+R2_ACCOUNT_ID = "d83b40f9ba48c1a0952568b9620ee62f"
+R2_BUCKET_NAME = "prm-project"
+R2_ENDPOINT = "https://d83b40f9ba48c1a0952568b9620ee62f.r2.cloudflarestorage.com/prm-project"
+WORKER_BASE_URL = "https://prm-project.agrilog.workers.dev"
+FIREBASE_PROJECT_ID = "prm-projects"
+FIREBASE_STORAGE_BUCKET = "prm-projects.firebasestorage.app"
+
+# Cloudflare R2 bucket binding for property photos, floorplans, and avatars
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "prm-project"
+preview_bucket_name = "prm-project-preview"

@@ -243,5 +243,39 @@
       "status": "approved",
       "finderNote": "Xem phòng buổi sáng trước khi đi làm."
     }
+  ],
+  "amenities": [
+    {
+      "id": "wifi",
+      "name": "Wi-Fi tốc độ cao"
+    },
+    {
+      "id": "air_conditioner",
+      "name": "Điều hòa 2 chiều"
+    },
+    {
+      "id": "water_heater",
+      "name": "Bình nóng lạnh"
+    },
+    {
+      "id": "refrigerator",
+      "name": "Tủ lạnh"
+    },
+    {
+      "id": "parking",
+      "name": "Chỗ để xe / Sạc xe điện"
+    },
+    {
+      "id": "private_bathroom",
+      "name": "Vệ sinh khép kín"
+    },
+    {
+      "id": "balcony",
+      "name": "Ban công thoáng mát"
+    },
+    {
+      "id": "security",
+      "name": "Khóa vân tay an toàn"
+    }
   ]
 }

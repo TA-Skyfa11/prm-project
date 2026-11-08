@@ -27,6 +27,7 @@ class Listing {
     this.ownerPhone = '0982123456',
     this.latitude = 21.0285,
     this.longitude = 105.8542,
+    this.isAudited = false,
   });
 
   final String id;
@@ -56,6 +57,7 @@ class Listing {
   final String ownerPhone;
   final double latitude;
   final double longitude;
+  final bool isAudited;
 
   String get formattedPrice {
     if (price >= 1000000) {
@@ -132,6 +134,7 @@ class Listing {
     String? roomStatus,
     double? rating,
     int? reviewsCount,
+    bool? isAudited,
   }) =>
       Listing(
         id: id,
@@ -161,6 +164,7 @@ class Listing {
         ownerPhone: ownerPhone,
         latitude: latitude,
         longitude: longitude,
+        isAudited: isAudited ?? this.isAudited,
       );
 
   static const demo = [

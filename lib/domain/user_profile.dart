@@ -10,6 +10,13 @@ class UserProfile {
     required this.role,
     this.isVerifiedHost = false,
     this.status = 'active',
+    this.cccdNumber = '',
+    this.cccdFrontImage = '',
+    this.cccdBackImage = '',
+    this.hostApprovalStatus = 'none', // 'none', 'pending', 'approved', 'rejected'
+    this.hostRejectionReason,
+    this.hostApplicationSource = '',
+    this.appliedAt,
   });
 
   final String id;
@@ -20,15 +27,24 @@ class UserProfile {
   final UserRole role;
   final bool isVerifiedHost;
   final String status; // "active", "banned"
+  final String cccdNumber;
+  final String cccdFrontImage;
+  final String cccdBackImage;
+  final String hostApprovalStatus; // "none", "pending", "approved", "rejected"
+  final String? hostRejectionReason;
+  final String hostApplicationSource; // "Đăng ký tài khoản mới" | "Nâng cấp từ Người tìm trọ"
+  final DateTime? appliedAt;
 
   String get roleDisplay {
     switch (role) {
       case UserRole.admin:
         return 'Quản trị viên (Admin)';
       case UserRole.owner:
-        return 'Chủ nhà trọ (House Owner)';
+        return isVerifiedHost ? 'Chủ nhà trọ (Đã xác minh)' : 'Chủ nhà trọ (Chờ duyệt CCCD)';
       case UserRole.finder:
-        return 'Người tìm trọ (House Finder)';
+        return hostApprovalStatus == 'pending'
+            ? 'Người tìm trọ (Đang chờ duyệt làm Chủ trọ)'
+            : 'Người tìm trọ (House Finder)';
       case UserRole.guest:
         return 'Khách vãng lai (Guest)';
     }
@@ -54,6 +70,13 @@ class UserProfile {
       role: r,
       isVerifiedHost: map['isVerifiedHost'] as bool? ?? false,
       status: map['status'] as String? ?? 'active',
+      cccdNumber: map['cccdNumber'] as String? ?? '',
+      cccdFrontImage: map['cccdFrontImage'] as String? ?? '',
+      cccdBackImage: map['cccdBackImage'] as String? ?? '',
+      hostApprovalStatus: map['hostApprovalStatus'] as String? ?? 'none',
+      hostRejectionReason: map['hostRejectionReason'] as String?,
+      hostApplicationSource: map['hostApplicationSource'] as String? ?? '',
+      appliedAt: map['appliedAt'] != null ? DateTime.tryParse(map['appliedAt'] as String) : null,
     );
   }
 
@@ -65,6 +88,13 @@ class UserProfile {
         'role': role.name,
         'isVerifiedHost': isVerifiedHost,
         'status': status,
+        'cccdNumber': cccdNumber,
+        'cccdFrontImage': cccdFrontImage,
+        'cccdBackImage': cccdBackImage,
+        'hostApprovalStatus': hostApprovalStatus,
+        'hostRejectionReason': hostRejectionReason,
+        'hostApplicationSource': hostApplicationSource,
+        'appliedAt': appliedAt?.toIso8601String(),
         'updatedAt': DateTime.now().toIso8601String(),
       };
 
@@ -75,6 +105,13 @@ class UserProfile {
     UserRole? role,
     bool? isVerifiedHost,
     String? status,
+    String? cccdNumber,
+    String? cccdFrontImage,
+    String? cccdBackImage,
+    String? hostApprovalStatus,
+    String? hostRejectionReason,
+    String? hostApplicationSource,
+    DateTime? appliedAt,
   }) =>
       UserProfile(
         id: id,
@@ -85,6 +122,13 @@ class UserProfile {
         role: role ?? this.role,
         isVerifiedHost: isVerifiedHost ?? this.isVerifiedHost,
         status: status ?? this.status,
+        cccdNumber: cccdNumber ?? this.cccdNumber,
+        cccdFrontImage: cccdFrontImage ?? this.cccdFrontImage,
+        cccdBackImage: cccdBackImage ?? this.cccdBackImage,
+        hostApprovalStatus: hostApprovalStatus ?? this.hostApprovalStatus,
+        hostRejectionReason: hostRejectionReason ?? this.hostRejectionReason,
+        hostApplicationSource: hostApplicationSource ?? this.hostApplicationSource,
+        appliedAt: appliedAt ?? this.appliedAt,
       );
 
   // Pre-configured demo accounts for instant testing
@@ -96,6 +140,7 @@ class UserProfile {
     avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300',
     role: UserRole.finder,
     isVerifiedHost: false,
+    hostApprovalStatus: 'none',
   );
 
   static const ownerUser = UserProfile(
@@ -106,6 +151,8 @@ class UserProfile {
     avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300',
     role: UserRole.owner,
     isVerifiedHost: true,
+    cccdNumber: '001090012345',
+    hostApprovalStatus: 'approved',
   );
 
   static const adminUser = UserProfile(
@@ -116,6 +163,7 @@ class UserProfile {
     avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=300',
     role: UserRole.admin,
     isVerifiedHost: true,
+    hostApprovalStatus: 'approved',
   );
 
   static const guestUser = UserProfile(
@@ -126,5 +174,6 @@ class UserProfile {
     avatarUrl: '',
     role: UserRole.guest,
     isVerifiedHost: false,
+    hostApprovalStatus: 'none',
   );
 }

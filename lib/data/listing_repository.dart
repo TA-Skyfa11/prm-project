@@ -2,24 +2,29 @@ import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../domain/listing.dart';
+import 'auth_repository.dart';
 
 class ListingRepository {
   static final ListingRepository _instance = ListingRepository._internal();
   factory ListingRepository() => _instance;
 
   final List<Listing> _inMemoryListings = List.from(Listing.demo);
-  final Set<String> _favoriteIds = {'post_cau_giay_301'};
+  final Map<String, Set<String>> _favoritesByUser = {
+    'user_finder_01': {'post_cau_giay_301'},
+    'current_user_finder': {'post_cau_giay_301'},
+  };
+
   late final StreamController<List<Listing>> _listingsController;
-  late final StreamController<Set<String>> _favoritesController;
+  late final StreamController<void> _favoritesChangedController;
 
   ListingRepository._internal() {
     _listingsController = StreamController<List<Listing>>.broadcast(
       onListen: () => _listingsController.add(List.unmodifiable(_inMemoryListings)),
     );
-    _favoritesController = StreamController<Set<String>>.broadcast(
-      onListen: () => _favoritesController.add(Set.unmodifiable(_favoriteIds)),
-    );
+    _favoritesChangedController = StreamController<void>.broadcast();
   }
+
+  String? get _activeUserId => AuthRepository().currentUser?.id;
 
   Stream<List<Listing>> watchListings() {
     try {
@@ -37,19 +42,37 @@ class ListingRepository {
     return _listingsController.stream;
   }
 
-  Stream<Set<String>> watchFavorites() {
-    return _favoritesController.stream;
+  Set<String> getFavorites([String? userId]) {
+    final uid = userId ?? _activeUserId;
+    if (uid == null) return const {};
+    return Set.unmodifiable(_favoritesByUser[uid] ?? const {});
   }
 
-  bool isFavorite(String id) => _favoriteIds.contains(id);
+  Stream<Set<String>> watchFavorites({String? userId}) async* {
+    final uid = userId ?? _activeUserId;
+    yield Set<String>.unmodifiable(_favoritesByUser[uid] ?? <String>{});
+    yield* _favoritesChangedController.stream.map((_) {
+      final curUid = userId ?? _activeUserId;
+      return Set<String>.unmodifiable(_favoritesByUser[curUid] ?? <String>{});
+    });
+  }
 
-  void toggleFavorite(String id) {
-    if (_favoriteIds.contains(id)) {
-      _favoriteIds.remove(id);
+  bool isFavorite(String id, {String? userId}) {
+    final uid = userId ?? _activeUserId;
+    if (uid == null) return false;
+    return _favoritesByUser[uid]?.contains(id) ?? false;
+  }
+
+  void toggleFavorite(String id, {String? userId}) {
+    final uid = userId ?? _activeUserId;
+    if (uid == null) return;
+    final set = _favoritesByUser.putIfAbsent(uid, () => <String>{});
+    if (set.contains(id)) {
+      set.remove(id);
     } else {
-      _favoriteIds.add(id);
+      set.add(id);
     }
-    _favoritesController.add(Set.unmodifiable(_favoriteIds));
+    _favoritesChangedController.add(null);
   }
 
   void addListing(Listing listing) {
@@ -75,10 +98,13 @@ class ListingRepository {
     } catch (_) {}
   }
 
-  void moderateListing(String listingId, String approvalStatus) {
+  void moderateListing(String listingId, String approvalStatus, {bool isAudited = true}) {
     final index = _inMemoryListings.indexWhere((l) => l.id == listingId);
     if (index != -1) {
-      _inMemoryListings[index] = _inMemoryListings[index].copyWith(approvalStatus: approvalStatus);
+      _inMemoryListings[index] = _inMemoryListings[index].copyWith(
+        approvalStatus: approvalStatus,
+        isAudited: isAudited,
+      );
       _listingsController.add(List.unmodifiable(_inMemoryListings));
     }
   }

@@ -1,4 +1,36 @@
 {
+  "users": [
+    {
+      "id": "user_finder_01",
+      "fullName": "Trần Thị Lan",
+      "email": "finder@housefinder.vn",
+      "phoneNumber": "0977888999",
+      "role": "finder",
+      "isVerifiedHost": false,
+      "status": "active",
+      "avatarUrl": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300"
+    },
+    {
+      "id": "owner_001",
+      "fullName": "Bác Hoàng Văn Minh",
+      "email": "owner@housefinder.vn",
+      "phoneNumber": "0982123456",
+      "role": "owner",
+      "isVerifiedHost": true,
+      "status": "active",
+      "avatarUrl": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300"
+    },
+    {
+      "id": "user_admin_01",
+      "fullName": "Nguyễn Quản Trị",
+      "email": "admin@housefinder.vn",
+      "phoneNumber": "0901234567",
+      "role": "admin",
+      "isVerifiedHost": true,
+      "status": "active",
+      "avatarUrl": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=300"
+    }
+  ],
   "categories": [
     {
       "id": "cat_room",

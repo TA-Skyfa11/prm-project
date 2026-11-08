@@ -11,6 +11,22 @@ WORKER_BASE_URL = "https://prm-project.agrilog.workers.dev"
 FIREBASE_PROJECT_ID = "prm-projects"
 FIREBASE_STORAGE_BUCKET = "prm-projects.firebasestorage.app"
 
+# ...
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
+
+[observability.issue_detection]
+enabled = true
+
+
 # Cloudflare R2 bucket binding for property photos, floorplans, and avatars
 [[r2_buckets]]
 binding = "R2_BUCKET"

@@ -5,6 +5,8 @@ import 'config/app_config.dart';
 import 'data/listing_repository.dart';
 import 'data/appointment_repository.dart';
 import 'data/chat_repository.dart';
+import 'data/auth_repository.dart';
+import 'data/firestore_seeder.dart';
 import 'domain/listing.dart';
 import 'domain/appointment.dart';
 import 'domain/chat.dart';
@@ -24,6 +26,8 @@ Future<void> main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+    // Seed Firestore collections if needed
+    await FirestoreSeeder.seedIfEmpty();
   } catch (_) {
     // Falls back gracefully if in mock or test environment
   }
@@ -43,60 +47,465 @@ class AspenApp extends StatelessWidget {
           useMaterial3: true,
           fontFamily: 'Roboto',
         ),
-        home: const MainNavigationShell(),
+        home: const AuthGate(),
       );
 }
 
-class MainNavigationShell extends StatefulWidget {
-  const MainNavigationShell({super.key});
+// ==============================================================================
+// 0. AUTH GATE & LOGIN/REGISTER SCREEN
+// ==============================================================================
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
 
   @override
-  State<MainNavigationShell> createState() => _MainNavigationShellState();
+  State<AuthGate> createState() => _AuthGateState();
 }
 
-class _MainNavigationShellState extends State<MainNavigationShell> {
-  int _currentTab = 0;
-  UserProfile _currentUser = UserProfile.defaultUser;
-
+class _AuthGateState extends State<AuthGate> {
+  final AuthRepository _authRepo = AuthRepository();
   final ListingRepository _listingRepo = ListingRepository();
   final AppointmentRepository _appointmentRepo = AppointmentRepository();
   final ChatRepository _chatRepo = ChatRepository();
 
-  void _onRoleChanged(UserRole newRole) {
-    setState(() {
-      _currentUser = _currentUser.copyWith(role: newRole);
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Đã chuyển vai trò sang: ${_currentUser.roleDisplay}'),
-        backgroundColor: blue,
-        duration: const Duration(seconds: 2),
-      ),
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<UserProfile?>(
+      stream: _authRepo.watchAuthState(),
+      builder: (context, snapshot) {
+        final user = snapshot.data ?? _authRepo.currentUser;
+
+        // 1. If not logged in -> Show Login/Register Screen first!
+        if (user == null) {
+          return LoginRegisterScreen(authRepo: _authRepo);
+        }
+
+        // 2. Render screen corresponding to the authenticated role!
+        switch (user.role) {
+          case UserRole.finder:
+            return FinderMainShell(
+              currentUser: user,
+              authRepo: _authRepo,
+              listingRepo: _listingRepo,
+              appointmentRepo: _appointmentRepo,
+              chatRepo: _chatRepo,
+            );
+          case UserRole.owner:
+            return OwnerMainShell(
+              currentUser: user,
+              authRepo: _authRepo,
+              listingRepo: _listingRepo,
+              appointmentRepo: _appointmentRepo,
+              chatRepo: _chatRepo,
+            );
+          case UserRole.admin:
+            return AdminMainShell(
+              currentUser: user,
+              authRepo: _authRepo,
+              listingRepo: _listingRepo,
+              appointmentRepo: _appointmentRepo,
+            );
+          case UserRole.guest:
+            return FinderMainShell(
+              currentUser: user,
+              authRepo: _authRepo,
+              listingRepo: _listingRepo,
+              appointmentRepo: _appointmentRepo,
+              chatRepo: _chatRepo,
+              isGuest: true,
+            );
+        }
+      },
     );
+  }
+}
+
+class LoginRegisterScreen extends StatefulWidget {
+  const LoginRegisterScreen({required this.authRepo, super.key});
+  final AuthRepository authRepo;
+
+  @override
+  State<LoginRegisterScreen> createState() => _LoginRegisterScreenState();
+}
+
+class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
+  bool _isLogin = true;
+  bool _obscurePassword = true;
+  bool _isLoading = false;
+
+  final TextEditingController _nameCtrl = TextEditingController();
+  final TextEditingController _emailCtrl = TextEditingController();
+  final TextEditingController _phoneCtrl = TextEditingController();
+  final TextEditingController _passCtrl = TextEditingController();
+  UserRole _selectedRole = UserRole.finder;
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _emailCtrl.dispose();
+    _phoneCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final email = _emailCtrl.text.trim();
+    final pass = _passCtrl.text.trim();
+
+    if (email.isEmpty || pass.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vui lòng nhập đầy đủ email và mật khẩu')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      if (_isLogin) {
+        await widget.authRepo.loginWithEmail(email, pass);
+      } else {
+        final name = _nameCtrl.text.trim().isEmpty ? 'Người dùng mới' : _nameCtrl.text.trim();
+        final phone = _phoneCtrl.text.trim().isEmpty ? '0900000000' : _phoneCtrl.text.trim();
+        await widget.authRepo.register(
+          fullName: name,
+          email: email,
+          password: pass,
+          phoneNumber: phone,
+          role: _selectedRole,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _quickLogin(UserProfile profile) {
+    widget.authRepo.setAuthenticatedUser(profile);
   }
 
   @override
   Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // App Logo and Brand
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: blue.withAlpha(25),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.home_work_rounded, color: blue, size: 48),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'House Finding System',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Nền tảng tìm kiếm & cho thuê phòng trọ xác thực',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: muted, fontSize: 13),
+                ),
+                const SizedBox(height: 24),
+
+                // Toggle Login / Register Segmented Control
+                Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(14)),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() => _isLogin = true),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            decoration: BoxDecoration(
+                              color: _isLogin ? Colors.white : Colors.transparent,
+                              borderRadius: BorderRadius.circular(10),
+                              boxShadow: _isLogin
+                                  ? [BoxShadow(color: Colors.black.withAlpha(15), blurRadius: 4)]
+                                  : null,
+                            ),
+                            child: Text(
+                              'Đăng nhập',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: _isLogin ? blue : muted,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() => _isLogin = false),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            decoration: BoxDecoration(
+                              color: !_isLogin ? Colors.white : Colors.transparent,
+                              borderRadius: BorderRadius.circular(10),
+                              boxShadow: !_isLogin
+                                  ? [BoxShadow(color: Colors.black.withAlpha(15), blurRadius: 4)]
+                                  : null,
+                            ),
+                            child: Text(
+                              'Đăng ký',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: !_isLogin ? blue : muted,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // Registration Fields (if not login)
+                if (!_isLogin) ...[
+                  TextField(
+                    controller: _nameCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'Họ và tên',
+                      prefixIcon: const Icon(Icons.person_outline, color: muted),
+                      filled: true,
+                      fillColor: surface,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _phoneCtrl,
+                    keyboardType: TextInputType.phone,
+                    decoration: InputDecoration(
+                      labelText: 'Số điện thoại',
+                      prefixIcon: const Icon(Icons.phone_outlined, color: muted),
+                      filled: true,
+                      fillColor: surface,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('Chọn vai trò tài khoản:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Text('Người tìm trọ'),
+                          selected: _selectedRole == UserRole.finder,
+                          onSelected: (_) => setState(() => _selectedRole = UserRole.finder),
+                          selectedColor: blue,
+                          labelStyle: TextStyle(color: _selectedRole == UserRole.finder ? Colors.white : Colors.black87, fontSize: 12),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Text('Chủ cho thuê trọ'),
+                          selected: _selectedRole == UserRole.owner,
+                          onSelected: (_) => setState(() => _selectedRole = UserRole.owner),
+                          selectedColor: blue,
+                          labelStyle: TextStyle(color: _selectedRole == UserRole.owner ? Colors.white : Colors.black87, fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                ],
+
+                // Common Email & Password
+                TextField(
+                  controller: _emailCtrl,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: InputDecoration(
+                    labelText: 'Email đăng nhập',
+                    hintText: 'finder@housefinder.vn',
+                    prefixIcon: const Icon(Icons.email_outlined, color: muted),
+                    filled: true,
+                    fillColor: surface,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passCtrl,
+                  obscureText: _obscurePassword,
+                  decoration: InputDecoration(
+                    labelText: 'Mật khẩu',
+                    prefixIcon: const Icon(Icons.lock_outline, color: muted),
+                    suffixIcon: IconButton(
+                      icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility, color: muted),
+                      onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                    ),
+                    filled: true,
+                    fillColor: surface,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                  ),
+                ),
+                const SizedBox(height: 18),
+
+                // Submit Button
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: blue,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: _isLoading ? null : _submit,
+                  child: _isLoading
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : Text(_isLogin ? 'Đăng nhập vào hệ thống' : 'Tạo tài khoản ngay', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+                const SizedBox(height: 20),
+
+                // Quick Demo Login Shortcuts for grading/testing
+                const Row(
+                  children: [
+                    Expanded(child: Divider()),
+                    Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 10),
+                      child: Text('Đăng nhập nhanh theo Role (Demo)', style: TextStyle(color: muted, fontSize: 11)),
+                    ),
+                    Expanded(child: Divider()),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        icon: const Icon(Icons.person, size: 16, color: blue),
+                        label: const Text('Finder', style: TextStyle(fontSize: 12)),
+                        onPressed: () => _quickLogin(UserProfile.finderUser),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        icon: const Icon(Icons.home, size: 16, color: green),
+                        label: const Text('Owner', style: TextStyle(fontSize: 12)),
+                        onPressed: () => _quickLogin(UserProfile.ownerUser),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        icon: const Icon(Icons.shield, size: 16, color: orange),
+                        label: const Text('Admin', style: TextStyle(fontSize: 12)),
+                        onPressed: () => _quickLogin(UserProfile.adminUser),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: () => widget.authRepo.loginAsGuest(),
+                  child: const Text('Duyệt xem phòng với tư cách Khách (Guest)', style: TextStyle(color: muted, fontSize: 13)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ==============================================================================
+// 1. ROLE: HOUSE FINDER MAIN SHELL (5 TABS)
+// ==============================================================================
+class FinderMainShell extends StatefulWidget {
+  const FinderMainShell({
+    required this.currentUser,
+    required this.authRepo,
+    required this.listingRepo,
+    required this.appointmentRepo,
+    required this.chatRepo,
+    this.isGuest = false,
+    super.key,
+  });
+
+  final UserProfile currentUser;
+  final AuthRepository authRepo;
+  final ListingRepository listingRepo;
+  final AppointmentRepository appointmentRepo;
+  final ChatRepository chatRepo;
+  final bool isGuest;
+
+  @override
+  State<FinderMainShell> createState() => _FinderMainShellState();
+}
+
+class _FinderMainShellState extends State<FinderMainShell> {
+  int _tab = 0;
+
+  @override
+  Widget build(BuildContext context) {
     final pages = [
-      ExplorePage(listingRepo: _listingRepo, appointmentRepo: _appointmentRepo, currentUser: _currentUser),
-      SavedWishlistPage(listingRepo: _listingRepo, appointmentRepo: _appointmentRepo),
-      AppointmentsPage(appointmentRepo: _appointmentRepo, currentUser: _currentUser),
-      ChatListPage(chatRepo: _chatRepo, currentUser: _currentUser),
-      ProfileHubPage(
-        currentUser: _currentUser,
-        onRoleChanged: _onRoleChanged,
-        listingRepo: _listingRepo,
-        appointmentRepo: _appointmentRepo,
+      ExplorePage(
+        listingRepo: widget.listingRepo,
+        appointmentRepo: widget.appointmentRepo,
+        currentUser: widget.currentUser,
+      ),
+      SavedWishlistPage(
+        listingRepo: widget.listingRepo,
+        appointmentRepo: widget.appointmentRepo,
+      ),
+      AppointmentsPage(
+        appointmentRepo: widget.appointmentRepo,
+        currentUser: widget.currentUser,
+      ),
+      ChatListPage(
+        chatRepo: widget.chatRepo,
+        currentUser: widget.currentUser,
+      ),
+      FinderProfilePage(
+        currentUser: widget.currentUser,
+        authRepo: widget.authRepo,
       ),
     ];
 
     return Scaffold(
       body: SafeArea(
-        child: IndexedStack(index: _currentTab, children: pages),
+        child: IndexedStack(index: _tab, children: pages),
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentTab,
-        onDestinationSelected: (idx) => setState(() => _currentTab = idx),
+        selectedIndex: _tab,
+        onDestinationSelected: (val) {
+          if (widget.isGuest && (val == 1 || val == 2 || val == 3)) {
+            _showGuestLoginPrompt();
+            return;
+          }
+          setState(() => _tab = val);
+        },
         indicatorColor: blue.withAlpha(28),
         destinations: const [
           NavigationDestination(
@@ -128,10 +537,962 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
       ),
     );
   }
+
+  void _showGuestLoginPrompt() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Yêu cầu đăng nhập'),
+        content: const Text('Vui lòng đăng nhập hoặc đăng ký tài khoản để lưu phòng, đặt lịch hẹn và nhắn tin với chủ trọ.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Để sau')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: blue),
+            onPressed: () {
+              Navigator.pop(ctx);
+              widget.authRepo.logout();
+            },
+            child: const Text('Đăng nhập ngay'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class FinderProfilePage extends StatelessWidget {
+  const FinderProfilePage({
+    required this.currentUser,
+    required this.authRepo,
+    super.key,
+  });
+
+  final UserProfile currentUser;
+  final AuthRepository authRepo;
+
+  void _showKYCDialog(BuildContext context) {
+    final cccdCtrl = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Đăng ký xác minh Chủ trọ (KYC)'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Hệ thống yêu cầu xác minh CCCD/CMND để bảo vệ người thuê khỏi tin giả:'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: cccdCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Số CCCD gắn chip (12 số)', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () {},
+              icon: const Icon(Icons.cloud_upload_outlined),
+              label: const Text('Tải ảnh 2 mặt CCCD lên Cloudflare R2'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: blue),
+            onPressed: () {
+              Navigator.pop(ctx);
+              authRepo.setAuthenticatedUser(UserProfile.ownerUser);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Hồ sơ đã được duyệt! Đã chuyển vai trò sang Chủ trọ (House Owner).')),
+              );
+            },
+            child: const Text('Gửi hồ sơ duyệt'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Tài khoản của tôi', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            // User Card
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(20)),
+              child: Row(
+                children: [
+                  UserAvatar(url: currentUser.avatarUrl, radius: 30),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(currentUser.fullName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+                        const SizedBox(height: 3),
+                        Text(currentUser.email, style: const TextStyle(color: muted, fontSize: 12)),
+                        const SizedBox(height: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(color: blue.withAlpha(25), borderRadius: BorderRadius.circular(8)),
+                          child: Text(currentUser.roleDisplay, style: const TextStyle(color: blue, fontWeight: FontWeight.bold, fontSize: 11)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            ListTile(
+              leading: const Icon(Icons.verified_user_outlined, color: blue),
+              title: const Text('Đăng ký trở thành Chủ trọ (KYC)'),
+              subtitle: const Text('Xác thực danh tính để bắt đầu đăng tin cho thuê phòng'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showKYCDialog(context),
+            ),
+            ListTile(
+              leading: const Icon(Icons.cloud_outlined, color: blue),
+              title: const Text('Hạ tầng Cloudflare + Firebase'),
+              subtitle: const Text('R2 Storage, Worker Edge & Firestore Rules'),
+              trailing: const Icon(Icons.info_outline),
+              onTap: () => _showCloudDialog(context),
+            ),
+            const Divider(height: 32),
+
+            // Logout Button
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: red,
+                  side: const BorderSide(color: red),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                icon: const Icon(Icons.logout),
+                label: const Text('Đăng xuất khỏi hệ thống', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: () => authRepo.logout(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showCloudDialog(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cloudflare + Firebase Integration'),
+        content: const Text(
+          '• Worker API: ${AppConfig.workerBaseUrl}\n'
+          '• R2 Storage: ${AppConfig.r2BucketName}\n'
+          '• Firebase Project: ${AppConfig.firebaseProjectId}\n'
+          '• Storage Bucket: ${AppConfig.firebaseStorageBucket}\n'
+          '• Firestore: users, apartments, listings, appointments',
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đã hiểu'))],
+      ),
+    );
+  }
 }
 
 // ==============================================================================
-// 1. EXPLORE & SEARCH PAGE
+// 2. ROLE: HOUSE OWNER MAIN SHELL (4 TABS)
+// ==============================================================================
+class OwnerMainShell extends StatefulWidget {
+  const OwnerMainShell({
+    required this.currentUser,
+    required this.authRepo,
+    required this.listingRepo,
+    required this.appointmentRepo,
+    required this.chatRepo,
+    super.key,
+  });
+
+  final UserProfile currentUser;
+  final AuthRepository authRepo;
+  final ListingRepository listingRepo;
+  final AppointmentRepository appointmentRepo;
+  final ChatRepository chatRepo;
+
+  @override
+  State<OwnerMainShell> createState() => _OwnerMainShellState();
+}
+
+class _OwnerMainShellState extends State<OwnerMainShell> {
+  int _tab = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = [
+      OwnerMyListingsTab(
+        listingRepo: widget.listingRepo,
+        currentUser: widget.currentUser,
+      ),
+      OwnerAddListingTab(
+        listingRepo: widget.listingRepo,
+        currentUser: widget.currentUser,
+      ),
+      OwnerAppointmentsTab(
+        appointmentRepo: widget.appointmentRepo,
+        currentUser: widget.currentUser,
+      ),
+      OwnerProfileTab(
+        currentUser: widget.currentUser,
+        authRepo: widget.authRepo,
+        chatRepo: widget.chatRepo,
+      ),
+    ];
+
+    return Scaffold(
+      body: SafeArea(
+        child: IndexedStack(index: _tab, children: pages),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (val) => setState(() => _tab = val),
+        indicatorColor: green.withAlpha(28),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.apartment_outlined),
+            selectedIcon: Icon(Icons.apartment, color: green),
+            label: 'Tin đăng của tôi',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.add_box_outlined),
+            selectedIcon: Icon(Icons.add_box, color: green),
+            label: 'Đăng tin mới',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.pending_actions_outlined),
+            selectedIcon: Icon(Icons.pending_actions, color: green),
+            label: 'Duyệt lịch hẹn',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.manage_accounts_outlined),
+            selectedIcon: Icon(Icons.manage_accounts, color: green),
+            label: 'Chủ trọ',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class OwnerMyListingsTab extends StatefulWidget {
+  const OwnerMyListingsTab({
+    required this.listingRepo,
+    required this.currentUser,
+    super.key,
+  });
+
+  final ListingRepository listingRepo;
+  final UserProfile currentUser;
+
+  @override
+  State<OwnerMyListingsTab> createState() => _OwnerMyListingsTabState();
+}
+
+class _OwnerMyListingsTabState extends State<OwnerMyListingsTab> {
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<Listing>>(
+      stream: widget.listingRepo.watchListings(),
+      builder: (context, snapshot) {
+        final all = snapshot.data ?? widget.listingRepo.currentListings;
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Quản lý tin đăng phòng trọ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            backgroundColor: Colors.white,
+            elevation: 0,
+          ),
+          body: ListView.separated(
+            padding: const EdgeInsets.all(20),
+            itemCount: all.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 16),
+            itemBuilder: (_, i) {
+              final item = all[i];
+              return Card(
+                elevation: 0,
+                color: surface,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.network(
+                              item.imageUrl,
+                              width: 80,
+                              height: 80,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => Container(width: 80, height: 80, color: surface),
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                const SizedBox(height: 4),
+                                Text(item.formattedPrice, style: const TextStyle(color: blue, fontWeight: FontWeight.bold, fontSize: 13)),
+                                Text('Điện: ${item.formattedElectricity} · Nước: ${item.formattedWater}', style: const TextStyle(color: muted, fontSize: 11)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Divider(height: 20),
+                      Row(
+                        children: [
+                          const Text('Trạng thái phòng: ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          const Spacer(),
+                          DropdownButton<String>(
+                            value: item.roomStatus,
+                            underline: const SizedBox(),
+                            items: const [
+                              DropdownMenuItem(value: 'available', child: Text('Còn phòng', style: TextStyle(color: green, fontWeight: FontWeight.bold, fontSize: 12))),
+                              DropdownMenuItem(value: 'rented', child: Text('Đã cho thuê', style: TextStyle(color: muted, fontWeight: FontWeight.bold, fontSize: 12))),
+                              DropdownMenuItem(value: 'hidden', child: Text('Tạm ẩn', style: TextStyle(color: orange, fontWeight: FontWeight.bold, fontSize: 12))),
+                            ],
+                            onChanged: (newStatus) {
+                              if (newStatus != null) {
+                                widget.listingRepo.updateRoomStatus(item.id, newStatus);
+                                setState(() {});
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Đã cập nhật trạng thái phòng: $newStatus')),
+                                );
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+class OwnerAddListingTab extends StatefulWidget {
+  const OwnerAddListingTab({
+    required this.listingRepo,
+    required this.currentUser,
+    super.key,
+  });
+
+  final ListingRepository listingRepo;
+  final UserProfile currentUser;
+
+  @override
+  State<OwnerAddListingTab> createState() => _OwnerAddListingTabState();
+}
+
+class _OwnerAddListingTabState extends State<OwnerAddListingTab> {
+  final TextEditingController _titleCtrl = TextEditingController();
+  final TextEditingController _priceCtrl = TextEditingController();
+  final TextEditingController _electricityCtrl = TextEditingController(text: '3800');
+  final TextEditingController _waterCtrl = TextEditingController(text: '30000');
+  final TextEditingController _addressCtrl = TextEditingController();
+  final TextEditingController _descCtrl = TextEditingController();
+  String _category = 'Phòng trọ';
+  String _district = 'Cầu Giấy';
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _priceCtrl.dispose();
+    _electricityCtrl.dispose();
+    _waterCtrl.dispose();
+    _addressCtrl.dispose();
+    _descCtrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (_titleCtrl.text.trim().isEmpty || _priceCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vui lòng nhập tiêu đề và giá thuê phòng')),
+      );
+      return;
+    }
+
+    final p = double.tryParse(_priceCtrl.text.trim()) ?? 3000000;
+    final elec = double.tryParse(_electricityCtrl.text.trim()) ?? 3800;
+    final water = double.tryParse(_waterCtrl.text.trim()) ?? 30000;
+
+    final newPost = Listing(
+      id: 'post_${DateTime.now().millisecondsSinceEpoch}',
+      title: _titleCtrl.text.trim(),
+      city: 'Hà Nội',
+      district: _district,
+      address: _addressCtrl.text.trim().isEmpty ? '$_district, Hà Nội' : _addressCtrl.text.trim(),
+      category: _category,
+      price: p,
+      deposit: p,
+      electricityCost: elec,
+      waterCost: water,
+      internetCost: 100000,
+      rating: 5.0,
+      reviewsCount: 1,
+      imageUrl: 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=700',
+      description: _descCtrl.text.trim().isEmpty ? 'Phòng sạch sẽ, an ninh tốt, tiện nghi đầy đủ.' : _descCtrl.text.trim(),
+      amenities: const ['Wi-Fi', 'Điều hòa', 'Nóng lạnh', 'Chỗ để xe', 'Khóa vân tay'],
+      ownerId: widget.currentUser.id,
+      ownerName: widget.currentUser.fullName,
+      ownerPhone: widget.currentUser.phoneNumber,
+    );
+
+    widget.listingRepo.addListing(newPost);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Đã đăng tin phòng trọ mới thành công! Đang đồng bộ lên Firestore.')),
+    );
+
+    _titleCtrl.clear();
+    _priceCtrl.clear();
+    _addressCtrl.clear();
+    _descCtrl.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Đăng tin phòng trọ mới', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _titleCtrl,
+              decoration: const InputDecoration(labelText: 'Tiêu đề tin đăng (*)', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _category,
+                    items: ['Phòng trọ', 'Căn hộ mini', 'Nhà nguyên căn', 'Ở ghép'].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                    onChanged: (val) => setState(() => _category = val ?? 'Phòng trọ'),
+                    decoration: const InputDecoration(labelText: 'Loại hình', border: OutlineInputBorder()),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _district,
+                    items: ['Cầu Giấy', 'Ba Đình', 'Nam Từ Liêm', 'Đống Đa', 'Tây Hồ'].map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
+                    onChanged: (val) => setState(() => _district = val ?? 'Cầu Giấy'),
+                    decoration: const InputDecoration(labelText: 'Quận/Huyện', border: OutlineInputBorder()),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _priceCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Giá thuê hàng tháng (VNĐ) (*)', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _electricityCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Giá điện (đ/kWh)', border: OutlineInputBorder()),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _waterCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Giá nước (đ/khối)', border: OutlineInputBorder()),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _addressCtrl,
+              decoration: const InputDecoration(labelText: 'Địa chỉ cụ thể (Số nhà, ngõ, đường)', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _descCtrl,
+              maxLines: 3,
+              decoration: const InputDecoration(labelText: 'Mô tả chi tiết phòng trọ', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Tải ảnh phòng trọ trực tiếp lên Cloudflare R2 Bucket (prm-project)')),
+                );
+              },
+              icon: const Icon(Icons.cloud_upload_outlined),
+              label: const Text('Tải ảnh phòng trọ lên Cloudflare R2'),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: green, padding: const EdgeInsets.symmetric(vertical: 14)),
+                onPressed: _submit,
+                child: const Text('Đăng bài và gửi duyệt', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class OwnerAppointmentsTab extends StatelessWidget {
+  const OwnerAppointmentsTab({
+    required this.appointmentRepo,
+    required this.currentUser,
+    super.key,
+  });
+
+  final AppointmentRepository appointmentRepo;
+  final UserProfile currentUser;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppointmentsPage(appointmentRepo: appointmentRepo, currentUser: currentUser);
+  }
+}
+
+class OwnerProfileTab extends StatelessWidget {
+  const OwnerProfileTab({
+    required this.currentUser,
+    required this.authRepo,
+    required this.chatRepo,
+    super.key,
+  });
+
+  final UserProfile currentUser;
+  final AuthRepository authRepo;
+  final ChatRepository chatRepo;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Tài khoản Chủ trọ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(20)),
+              child: Row(
+                children: [
+                  UserAvatar(url: currentUser.avatarUrl, radius: 30),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(currentUser.fullName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+                        const SizedBox(height: 3),
+                        Text(currentUser.email, style: const TextStyle(color: muted, fontSize: 12)),
+                        const SizedBox(height: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(color: green.withAlpha(25), borderRadius: BorderRadius.circular(8)),
+                          child: const Text('Chủ trọ đã xác minh CCCD', style: TextStyle(color: green, fontWeight: FontWeight.bold, fontSize: 11)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            ListTile(
+              leading: const Icon(Icons.chat, color: green),
+              title: const Text('Tin nhắn trao đổi với khách thuê'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => ChatListPage(chatRepo: chatRepo, currentUser: currentUser)),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.verified, color: green),
+              title: const Text('Hồ sơ pháp lý khu trọ'),
+              trailing: const Icon(Icons.check_circle, color: green),
+            ),
+            const Divider(height: 32),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: red,
+                  side: const BorderSide(color: red),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                icon: const Icon(Icons.logout),
+                label: const Text('Đăng xuất khỏi hệ thống', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: () => authRepo.logout(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==============================================================================
+// 3. ROLE: ADMINISTRATOR MAIN SHELL (3 TABS)
+// ==============================================================================
+class AdminMainShell extends StatefulWidget {
+  const AdminMainShell({
+    required this.currentUser,
+    required this.authRepo,
+    required this.listingRepo,
+    required this.appointmentRepo,
+    super.key,
+  });
+
+  final UserProfile currentUser;
+  final AuthRepository authRepo;
+  final ListingRepository listingRepo;
+  final AppointmentRepository appointmentRepo;
+
+  @override
+  State<AdminMainShell> createState() => _AdminMainShellState();
+}
+
+class _AdminMainShellState extends State<AdminMainShell> {
+  int _tab = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = [
+      AdminDashboardTab(listingRepo: widget.listingRepo, appointmentRepo: widget.appointmentRepo),
+      AdminModerationTab(listingRepo: widget.listingRepo),
+      AdminUsersTab(authRepo: widget.authRepo),
+    ];
+
+    return Scaffold(
+      body: SafeArea(
+        child: IndexedStack(index: _tab, children: pages),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (val) => setState(() => _tab = val),
+        indicatorColor: orange.withAlpha(28),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard, color: orange),
+            label: 'Dashboard',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.fact_check_outlined),
+            selectedIcon: Icon(Icons.fact_check, color: orange),
+            label: 'Kiểm duyệt tin',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.people_outline),
+            selectedIcon: Icon(Icons.people, color: orange),
+            label: 'Người dùng & Admin',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class AdminDashboardTab extends StatelessWidget {
+  const AdminDashboardTab({
+    required this.listingRepo,
+    required this.appointmentRepo,
+    super.key,
+  });
+
+  final ListingRepository listingRepo;
+  final AppointmentRepository appointmentRepo;
+
+  @override
+  Widget build(BuildContext context) {
+    final listings = listingRepo.currentListings;
+    final aptms = appointmentRepo.currentAppointments;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Admin Dashboard & KPIs', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Chỉ số vận hành hệ thống', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(child: _buildMetricCard('Tổng số tin đăng', '${listings.length}', blue, Icons.home)),
+                const SizedBox(width: 12),
+                Expanded(child: _buildMetricCard('Lịch hẹn xem phòng', '${aptms.length}', green, Icons.calendar_month)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(child: _buildMetricCard('Người dùng active', '128', orange, Icons.people)),
+                const SizedBox(width: 12),
+                Expanded(child: _buildMetricCard('Báo cáo vi phạm', '0', red, Icons.report_problem)),
+              ],
+            ),
+            const SizedBox(height: 24),
+            const Text('Cấu hình Cloudflare & Firebase đã kết nối', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(16)),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('• Project ID: ${AppConfig.firebaseProjectId}', style: TextStyle(fontSize: 13)),
+                  SizedBox(height: 6),
+                  Text('• R2 Bucket: ${AppConfig.r2BucketName}', style: TextStyle(fontSize: 13)),
+                  SizedBox(height: 6),
+                  Text('• Worker Domain: ${AppConfig.workerBaseUrl}', style: TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetricCard(String label, String value, Color color, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withAlpha(20),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withAlpha(60)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 28),
+          const SizedBox(height: 8),
+          Text(value, style: TextStyle(color: color, fontSize: 24, fontWeight: FontWeight.bold)),
+          Text(label, style: const TextStyle(color: muted, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
+class AdminModerationTab extends StatefulWidget {
+  const AdminModerationTab({required this.listingRepo, super.key});
+  final ListingRepository listingRepo;
+
+  @override
+  State<AdminModerationTab> createState() => _AdminModerationTabState();
+}
+
+class _AdminModerationTabState extends State<AdminModerationTab> {
+  @override
+  Widget build(BuildContext context) {
+    final listings = widget.listingRepo.currentListings;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Hàng đợi kiểm duyệt tin đăng', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: ListView.separated(
+        padding: const EdgeInsets.all(20),
+        itemCount: listings.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 16),
+        itemBuilder: (_, i) {
+          final item = listings[i];
+          return Card(
+            elevation: 0,
+            color: surface,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.network(
+                          item.imageUrl,
+                          width: 70,
+                          height: 70,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => Container(width: 70, height: 70, color: surface),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            const SizedBox(height: 4),
+                            Text('${item.district} · ${item.formattedPrice}', style: const TextStyle(color: blue, fontWeight: FontWeight.bold, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 20),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(foregroundColor: red),
+                          onPressed: () {
+                            widget.listingRepo.moderateListing(item.id, 'rejected');
+                            setState(() {});
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã từ chối bài đăng')));
+                          },
+                          child: const Text('Từ chối tin'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(backgroundColor: green),
+                          onPressed: () {
+                            widget.listingRepo.moderateListing(item.id, 'approved');
+                            setState(() {});
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã phê duyệt tin đăng công khai')));
+                          },
+                          child: const Text('Duyệt tin'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class AdminUsersTab extends StatelessWidget {
+  const AdminUsersTab({required this.authRepo, super.key});
+  final AuthRepository authRepo;
+
+  @override
+  Widget build(BuildContext context) {
+    final users = [
+      UserProfile.finderUser,
+      UserProfile.ownerUser,
+      UserProfile.adminUser,
+    ];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Quản lý người dùng', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: ListView.separated(
+        padding: const EdgeInsets.all(20),
+        itemCount: users.length + 1,
+        separatorBuilder: (_, _) => const SizedBox(height: 12),
+        itemBuilder: (_, i) {
+          if (i == users.length) {
+            return Padding(
+              padding: const EdgeInsets.only(top: 20),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: red,
+                    side: const BorderSide(color: red),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  icon: const Icon(Icons.logout),
+                  label: const Text('Đăng xuất khỏi hệ thống', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () => authRepo.logout(),
+                ),
+              ),
+            );
+          }
+
+          final u = users[i];
+          return Card(
+            elevation: 0,
+            color: surface,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: ListTile(
+              leading: UserAvatar(url: u.avatarUrl, radius: 22),
+              title: Text(u.fullName, style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('${u.roleDisplay}\n${u.email}'),
+              trailing: Chip(label: Text(u.status), backgroundColor: green.withAlpha(30)),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ==============================================================================
+// 4. SHARED EXPLORE & DETAIL & APPOINTMENTS PAGES
 // ==============================================================================
 class ExplorePage extends StatefulWidget {
   const ExplorePage({
@@ -258,7 +1619,6 @@ class _ExplorePageState extends State<ExplorePage> {
       builder: (context, snapshot) {
         final allListings = snapshot.data ?? widget.listingRepo.currentListings;
 
-        // Apply filters
         final filtered = allListings.where((item) {
           final matchesCategory = _selectedCategory == 'Tất cả' || item.category == _selectedCategory;
           final matchesDistrict = _selectedDistrict == 'Tất cả' || item.district == _selectedDistrict;
@@ -652,9 +2012,6 @@ class _ExplorePageState extends State<ExplorePage> {
   }
 }
 
-// ==============================================================================
-// 1.1 ALL LISTINGS (VIEW ALL) PAGE
-// ==============================================================================
 class AllListingsPage extends StatefulWidget {
   const AllListingsPage({
     required this.title,
@@ -868,9 +2225,6 @@ class _AllListingsPageState extends State<AllListingsPage> {
   }
 }
 
-// ==============================================================================
-// 2. SAVED / WISHLIST PAGE
-// ==============================================================================
 class SavedWishlistPage extends StatefulWidget {
   const SavedWishlistPage({
     required this.listingRepo,
@@ -932,7 +2286,7 @@ class _SavedWishlistPageState extends State<SavedWishlistPage> {
                               listing: item,
                               listingRepo: widget.listingRepo,
                               appointmentRepo: widget.appointmentRepo,
-                              currentUser: UserProfile.defaultUser,
+                              currentUser: UserProfile.finderUser,
                             ),
                           ),
                         ),
@@ -982,9 +2336,6 @@ class _SavedWishlistPageState extends State<SavedWishlistPage> {
   }
 }
 
-// ==============================================================================
-// 3. APPOINTMENTS (VIEWING REQUESTS) PAGE
-// ==============================================================================
 class AppointmentsPage extends StatefulWidget {
   const AppointmentsPage({
     required this.appointmentRepo,
@@ -1166,7 +2517,13 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
                               children: [
                                 ClipRRect(
                                   borderRadius: BorderRadius.circular(8),
-                                  child: Image.network(item.listingThumbnail, width: 50, height: 50, fit: BoxFit.cover),
+                                  child: Image.network(
+                                    item.listingThumbnail,
+                                    width: 50,
+                                    height: 50,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) => Container(width: 50, height: 50, color: surface),
+                                  ),
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
@@ -1203,7 +2560,6 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
                               Text('Lý do từ chối: ${item.rejectionReason}', style: const TextStyle(color: red, fontSize: 12)),
                             ],
                             const SizedBox(height: 12),
-                            // Action buttons based on status & role
                             if (isOwnerMode && item.status == 'pending') ...[
                               Row(
                                 children: [
@@ -1259,9 +2615,6 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
   }
 }
 
-// ==============================================================================
-// 4. CHAT LIST & MESSAGING
-// ==============================================================================
 class ChatListPage extends StatelessWidget {
   const ChatListPage({
     required this.chatRepo,
@@ -1291,7 +2644,7 @@ class ChatListPage extends StatelessWidget {
             contentPadding: const EdgeInsets.symmetric(vertical: 8),
             leading: Stack(
               children: [
-                CircleAvatar(radius: 26, backgroundImage: networkErrorHandledImage(room.otherPartyAvatar)),
+                UserAvatar(url: room.otherPartyAvatar, radius: 26),
                 if (room.unreadCount > 0)
                   Positioned(
                     right: 0,
@@ -1364,7 +2717,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            CircleAvatar(radius: 18, backgroundImage: networkErrorHandledImage(widget.room.otherPartyAvatar)),
+            UserAvatar(url: widget.room.otherPartyAvatar, radius: 18),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -1419,7 +2772,6 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
               },
             ),
           ),
-          // Quick message presets
           SizedBox(
             height: 40,
             child: ListView.separated(
@@ -1471,317 +2823,6 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
   }
 }
 
-// ==============================================================================
-// 5. PROFILE & MANAGEMENT HUB (ROLES SWITCHER & LANDLORD / ADMIN SUITE)
-// ==============================================================================
-class ProfileHubPage extends StatelessWidget {
-  const ProfileHubPage({
-    required this.currentUser,
-    required this.onRoleChanged,
-    required this.listingRepo,
-    required this.appointmentRepo,
-    super.key,
-  });
-
-  final UserProfile currentUser;
-  final ValueChanged<UserRole> onRoleChanged;
-  final ListingRepository listingRepo;
-  final AppointmentRepository appointmentRepo;
-
-  void _showKYCDialog(BuildContext context) {
-    final cccdCtrl = TextEditingController();
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Đăng ký xác minh Chủ trọ (KYC)'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Hệ thống yêu cầu xác minh CCCD/CMND để bảo vệ người thuê khỏi tin giả:'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: cccdCtrl,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Số CCCD gắn chip (12 số)', border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: () {},
-              icon: const Icon(Icons.cloud_upload_outlined),
-              label: const Text('Tải ảnh 2 mặt CCCD lên Cloudflare R2'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: blue),
-            onPressed: () {
-              Navigator.pop(ctx);
-              onRoleChanged(UserRole.owner);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Hồ sơ đã được duyệt! Đã cấp quyền Chủ nhà trọ.')),
-              );
-            },
-            child: const Text('Gửi hồ sơ duyệt'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showAddPostDialog(BuildContext context) {
-    final titleCtrl = TextEditingController();
-    final priceCtrl = TextEditingController();
-    final addressCtrl = TextEditingController();
-    String cat = 'Phòng trọ';
-
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('Đăng tin phòng trọ mới'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Tiêu đề bài đăng')),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  initialValue: cat,
-                  items: ['Phòng trọ', 'Căn hộ mini', 'Nhà nguyên căn', 'Ở ghép'].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                  onChanged: (val) => setDialogState(() => cat = val ?? 'Phòng trọ'),
-                  decoration: const InputDecoration(labelText: 'Loại hình cho thuê'),
-                ),
-                const SizedBox(height: 8),
-                TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Giá thuê hàng tháng (VNĐ)')),
-                const SizedBox(height: 8),
-                TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'Địa chỉ cụ thể')),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: blue),
-              onPressed: () {
-                final p = double.tryParse(priceCtrl.text) ?? 3000000;
-                final newPost = Listing(
-                  id: 'post_${DateTime.now().millisecondsSinceEpoch}',
-                  title: titleCtrl.text.trim().isEmpty ? 'Phòng trọ mới đăng' : titleCtrl.text.trim(),
-                  city: 'Hà Nội',
-                  district: 'Cầu Giấy',
-                  address: addressCtrl.text.trim().isEmpty ? 'Cầu Giấy, Hà Nội' : addressCtrl.text.trim(),
-                  category: cat,
-                  price: p,
-                  deposit: p,
-                  rating: 5.0,
-                  reviewsCount: 1,
-                  imageUrl: 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=700',
-                  description: 'Phòng mới sạch sẽ đầy đủ nội thất...',
-                  amenities: const ['Wi-Fi', 'Điều hòa', 'Nóng lạnh'],
-                );
-                listingRepo.addListing(newPost);
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Bài đăng đã được tạo và gửi duyệt thành công!')),
-                );
-              },
-              child: const Text('Đăng bài'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Hồ sơ & Phân quyền', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-        backgroundColor: Colors.white,
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            // User Card
-            Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(color: surface, borderRadius: BorderRadius.circular(20)),
-              child: Row(
-                children: [
-                  CircleAvatar(radius: 32, backgroundImage: networkErrorHandledImage(currentUser.avatarUrl)),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(currentUser.fullName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-                        const SizedBox(height: 4),
-                        Text(currentUser.email, style: const TextStyle(color: muted, fontSize: 12)),
-                        const SizedBox(height: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(color: blue.withAlpha(25), borderRadius: BorderRadius.circular(8)),
-                          child: Text(currentUser.roleDisplay, style: const TextStyle(color: blue, fontWeight: FontWeight.bold, fontSize: 11)),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-
-            // Role Switcher (For grading / demo test)
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Chuyển đổi vai trò trải nghiệm (PRM393 Demo):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: FilterChip(
-                    label: const Text('Finder', style: TextStyle(fontSize: 12)),
-                    selected: currentUser.role == UserRole.finder,
-                    onSelected: (_) => onRoleChanged(UserRole.finder),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilterChip(
-                    label: const Text('Owner', style: TextStyle(fontSize: 12)),
-                    selected: currentUser.role == UserRole.owner,
-                    onSelected: (_) => onRoleChanged(UserRole.owner),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilterChip(
-                    label: const Text('Admin', style: TextStyle(fontSize: 12)),
-                    selected: currentUser.role == UserRole.admin,
-                    onSelected: (_) => onRoleChanged(UserRole.admin),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-
-            // Role specific menu actions
-            if (currentUser.role == UserRole.finder) ...[
-              ListTile(
-                leading: const Icon(Icons.verified_user_outlined, color: blue),
-                title: const Text('Đăng ký trở thành Chủ trọ (KYC)'),
-                subtitle: const Text('Xác thực danh tính để bắt đầu đăng tin cho thuê phòng'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _showKYCDialog(context),
-              ),
-            ] else if (currentUser.role == UserRole.owner) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  border: Border.all(color: blue.withAlpha(80)),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Khu vực Quản trị dành cho Chủ trọ', style: TextStyle(fontWeight: FontWeight.bold, color: blue, fontSize: 15)),
-                    const SizedBox(height: 12),
-                    FilledButton.icon(
-                      style: FilledButton.styleFrom(backgroundColor: blue),
-                      icon: const Icon(Icons.add),
-                      label: const Text('Đăng tin phòng trọ mới'),
-                      onPressed: () => _showAddPostDialog(context),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.home_work_outlined),
-                      label: const Text('Quản lý khu trọ & Trạng thái phòng'),
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Tính năng quản lý tòa nhà và đồng bộ trạng thái qua Firestore.')),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ] else if (currentUser.role == UserRole.admin) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  border: Border.all(color: orange.withAlpha(80)),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Khu vực Quản trị viên (Admin Portal)', style: TextStyle(fontWeight: FontWeight.bold, color: orange, fontSize: 15)),
-                    const SizedBox(height: 10),
-                    const Text('KPIs Hệ thống: 120 Người dùng · 45 Bài đăng · 3 Báo cáo vi phạm'),
-                    const SizedBox(height: 12),
-                    FilledButton.icon(
-                      style: FilledButton.styleFrom(backgroundColor: orange),
-                      icon: const Icon(Icons.approval),
-                      label: const Text('Kiểm duyệt tin đăng (Pending Queue)'),
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Đang tải danh sách tin bài cần Admin xét duyệt...')),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-
-            const SizedBox(height: 20),
-            ListTile(
-              leading: const Icon(Icons.security),
-              title: const Text('Bảo mật & Đổi mật khẩu'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {},
-            ),
-            ListTile(
-              leading: const Icon(Icons.cloud_outlined),
-              title: const Text('Kiến trúc Cloudflare + Firebase'),
-              subtitle: const Text('Edge API Worker, R2 Media CDN & Firestore Rules'),
-              trailing: const Icon(Icons.info_outline),
-              onTap: () {
-                showDialog<void>(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('Cloudflare + Firebase Integration'),
-                    content: const Text(
-                      '• Worker API: ${AppConfig.workerBaseUrl}\n'
-                      '• R2 Storage: ${AppConfig.r2BucketName} (Cloudflare)\n'
-                      '• Firebase Project: ${AppConfig.firebaseProjectId}\n'
-                      '• Storage Bucket: ${AppConfig.firebaseStorageBucket}\n'
-                      '• Firestore: Real-time NoSQL DB & Security Rules\n'
-                      '• Google Services: Đã kết nối google-services.json',
-                    ),
-                    actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đã hiểu'))],
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ==============================================================================
-// 6. LISTING DETAIL PAGE & VIEWING BOOKING MODAL
-// ==============================================================================
 class DetailPage extends StatelessWidget {
   const DetailPage({
     required this.listing,
@@ -1797,6 +2838,28 @@ class DetailPage extends StatelessWidget {
   final UserProfile currentUser;
 
   void _openBookingSheet(BuildContext context) {
+    if (currentUser.role == UserRole.guest) {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Yêu cầu đăng nhập'),
+          content: const Text('Bạn cần đăng nhập hoặc tạo tài khoản để đặt lịch hẹn xem phòng với chủ nhà.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Đóng')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: blue),
+              onPressed: () {
+                Navigator.pop(ctx);
+                AuthRepository().logout();
+              },
+              child: const Text('Đăng nhập'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     String selectedDate = '12/11/2026';
     String selectedTime = '15:30';
     final noteCtrl = TextEditingController();
@@ -1965,7 +3028,6 @@ class DetailPage extends StatelessWidget {
                   ),
                   const Divider(height: 32),
 
-                  // Transparent Utility Costs Section
                   const Text('Minh bạch chi phí hàng tháng', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 12),
                   Container(
@@ -1985,7 +3047,6 @@ class DetailPage extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
 
-                  // Room specs
                   const Text('Thông số phòng', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 12),
                   Row(
@@ -1998,7 +3059,6 @@ class DetailPage extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
 
-                  // Amenities
                   const Text('Tiện ích có sẵn', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 12),
                   Wrap(
@@ -2015,13 +3075,11 @@ class DetailPage extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
 
-                  // Description
                   const Text('Mô tả chi tiết', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
                   Text(listing.description, style: const TextStyle(color: Colors.black87, height: 1.5, fontSize: 14)),
                   const SizedBox(height: 24),
 
-                  // Landlord Contact Card
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(16)),
@@ -2128,10 +3186,32 @@ class DetailPage extends StatelessWidget {
       );
 }
 
-// Image provider with graceful fallback
-ImageProvider networkErrorHandledImage(String url) {
-  if (url.isEmpty || !url.startsWith('http')) {
-    return const NetworkImage('https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300');
+class UserAvatar extends StatelessWidget {
+  const UserAvatar({required this.url, this.radius = 24, super.key});
+  final String url;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    if (url.isEmpty || !url.startsWith('http')) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: surface,
+        child: Icon(Icons.person, color: blue, size: radius * 1.1),
+      );
+    }
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: surface,
+      child: ClipOval(
+        child: Image.network(
+          url,
+          width: radius * 2,
+          height: radius * 2,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => Icon(Icons.person, color: blue, size: radius * 1.1),
+        ),
+      ),
+    );
   }
-  return NetworkImage(url);
 }

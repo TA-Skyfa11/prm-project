@@ -47,9 +47,50 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-# Local Firebase and edge configuration
-config/firebase_options.dart
-config/.env
-*.keystore
+# --------------------------------------------------
+# Sensitive Data, Secrets & Credentials
+# --------------------------------------------------
+# Firebase configuration & keys
 google-services.json
+**/google-services.json
 GoogleService-Info.plist
+**/GoogleService-Info.plist
+lib/firebase_options.dart
+**/firebase_options.dart
+config/firebase_options.dart
+*firebase-adminsdk*.json
+*serviceAccountKey*.json
+*service-account*.json
+
+# Environment variables & local secrets
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+config/.env
+.dev.vars
+.dev.vars.*
+cloudflare/.dev.vars
+cloudflare/.wrangler/
+
+# Android & iOS signing keys, certificates & keystores
+*.keystore
+**/*.keystore
+*.jks
+**/*.jks
+key.properties
+**/key.properties
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.pem
+*.key
+client_secret*.json
+
+# Local SDK & machine paths
+local.properties
+**/local.properties
